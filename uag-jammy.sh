@@ -72,6 +72,7 @@ function parse_params() {
         sha_suffix="${today}"
         gpg_verify=1
         all_in_one=0
+        all_in_local=0
         use_hwe_kernel=0
         md5_checksum=1
         use_release_iso=0
@@ -84,6 +85,7 @@ function parse_params() {
                 -e | --use-hwe-kernel) use_hwe_kernel=1 ;;
                 -c | --no-md5) md5_checksum=0 ;;
                 -k | --no-verify) gpg_verify=0 ;;
+                -L | --all-in-local) all_in_local=1 ;;
                 -r | --use-release-iso) use_release_iso=1 ;;
                 -u | --user-data)
                         user_data_file="${2-}"
@@ -216,8 +218,8 @@ log "👍 Extracted to $tmpdir"
 if [ ${use_hwe_kernel} -eq 1 ]; then
         if grep -q "hwe-vmlinuz" "$tmpdir/boot/grub/grub.cfg"; then
                 log "☑️ Destination ISO will use HWE kernel."
-                sed -i -e 's|/casper/vmlinuz|/casper/hwe-vmlinuz|g' "$tmpdir/isolinux/txt.cfg"
-                sed -i -e 's|/casper/initrd|/casper/hwe-initrd|g' "$tmpdir/isolinux/txt.cfg"
+                #sed -i -e 's|/casper/vmlinuz|/casper/hwe-vmlinuz|g' "$tmpdir/isolinux/txt.cfg"
+                #sed -i -e 's|/casper/initrd|/casper/hwe-initrd|g' "$tmpdir/isolinux/txt.cfg"
                 sed -i -e 's|/casper/vmlinuz|/casper/hwe-vmlinuz|g' "$tmpdir/boot/grub/grub.cfg"
                 sed -i -e 's|/casper/initrd|/casper/hwe-initrd|g' "$tmpdir/boot/grub/grub.cfg"
                 sed -i -e 's|/casper/vmlinuz|/casper/hwe-vmlinuz|g' "$tmpdir/boot/grub/loopback.cfg"
@@ -242,9 +244,14 @@ if [ ${all_in_one} -eq 1 ]; then
         else
                 touch "$tmpdir/nocloud/meta-data"
         fi
-        #sed -i -e 's,---, ds=nocloud;s=/cdrom/nocloud/  ---,g' "$tmpdir/isolinux/txt.cfg"
-        sed -i -e 's,---, ds=nocloud\\\;s=/cdrom/nocloud/  ---,g' "$tmpdir/boot/grub/grub.cfg"
-        sed -i -e 's,---, ds=nocloud\\\;s=/cdrom/nocloud/  ---,g' "$tmpdir/boot/grub/loopback.cfg"
+        if [ ${all_in_local} -eq 1 ]; then
+           #sed -i -e 's,---, ds=nocloud;s=/cdrom/nocloud/  ---,g' "$tmpdir/isolinux/txt.cfg"
+           sed -i -e 's,---, ds=nocloud\\\;s=/cdrom/nocloud/  ---,g' "$tmpdir/boot/grub/grub.cfg"
+           sed -i -e 's,---, ds=nocloud\\\;s=/cdrom/nocloud/  ---,g' "$tmpdir/boot/grub/loopback.cfg"
+        else
+           sed -i -e 's,---, ds=nocloud\\\;s=http://10.40.136.20/Ubuntu/cloud-init/ fsck=skip  ---,g' "$tmpdir/boot/grub/grub.cfg"
+           sed -i -e 's,---, ds=nocloud\\\;s=http://10.40.136.20/Ubuntu/cloud-init/ fsck=skip ---,g' "$tmpdir/boot/grub/loopback.cfg"
+        fi
         log "👍 Added data and configured kernel command line."
 fi
 
@@ -265,8 +272,8 @@ log "📦 Repackaging extracted files into an ISO image..."
 cd "$tmpdir"
 #xorriso -as mkisofs -r -V "ubuntu-autoinstall-$today" -J -b isolinux/isolinux.bin -c isolinux/boot.cat -no-emul-boot -boot-load-size 4 -isohybrid-mbr /usr/lib/ISOLINUX/isohdpfx.bin -boot-info-table -input-charset utf-8 -eltorito-alt-boot -e boot/grub/efi.img -no-emul-boot -isohybrid-gpt-basdat -o "${destination_iso}" . 
 # &>/dev/null
-xorriso -as mkisofs -r -V "ubuntu-autoinstall-$today" -J -no-emul-boot -isohybrid-gpt-basdat -o "${destination_iso}" . 
-# &>/dev/null
+
+xorriso -as mkisofs -r -V "ubuntu-autoinstall-$today" -J -no-emul-boot -isohybrid-gpt-basdat -o "${destination_iso}" . | tee ./build-iso.log &>/dev/null
 cd "$OLDPWD"
 log "👍 Repackaged into ${destination_iso}"
 die "✅ Completed." 0

@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+
+./ubuntu-autoinstall-generator-jammy.sh -a -v -k ./user-data

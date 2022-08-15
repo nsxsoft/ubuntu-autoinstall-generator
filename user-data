@@ -1,0 +1,449 @@
+#cloud-config
+
+autoinstall: # Commands here run during before installation of disk(can be interactive with the special module)
+  update: no
+  version: 1
+
+  ssh:
+    allow-pw: true
+    authorized-keys: []
+    install-server: true
+
+  apt:
+    preserve_sources_list: false
+    primary:
+    - arches: [amd64, i386]
+      uri: http://us.archive.ubuntu.com/ubuntu
+    - arches: [default]
+      uri: http://ports.ubuntu.com/ubuntu-ports
+
+  storage:
+    config:
+    - {ptable: gpt, path: /dev/sda, wipe: superblock, preserve: false, name: '', grub_device: false, 
+      type: disk, id: disk-sda}
+    - {device: disk-sda, size: 536870912, wipe: superblock, flag: boot, number: 1,
+      preserve: false, grub_device: true, type: partition, id: partition-1}
+    - {fstype: fat32, volume: partition-1, preserve: false, type: format, id: format-1}
+    - {device: disk-sda, size: 524288000, wipe: superblock, flag: '', number: 2, preserve: false,    
+      grub_device: false, type: partition, id: partition-2}
+    - {fstype: xfs, volume: partition-2, preserve: false, type: format, id: format-2}
+    - {device: disk-sda, size: 106310926336, wipe: superblock, flag: '', number: 3,
+      preserve: false, grub_device: false, type: partition, id: partition-3}
+    - name: vg1
+      devices: [partition-3]
+      preserve: false
+      type: lvm_volgroup
+      id: lvm_volgroup-0
+    - {name: LVRoot, volgroup: lvm_volgroup-0, size: 16106127360B, wipe: superblock,
+      preserve: false, type: lvm_partition, id: lvm_partition-0}
+    - {fstype: xfs, volume: lvm_partition-0, preserve: false, type: format, id: format-3}
+    - {path: /, device: format-3, type: mount, id: mount-3}
+    - {name: LVSwap, volgroup: lvm_volgroup-0, size: 4294967296B, wipe: superblock,
+      preserve: false, type: lvm_partition, id: lvm_partition-1}
+    - {fstype: swap, volume: lvm_partition-1, preserve: false, type: format, id: format-4}
+    - {path: '', device: format-4, type: mount, id: mount-4}
+    - {name: LVAudit, volgroup: lvm_volgroup-0, size: 5368709120B, wipe: superblock,
+      preserve: false, type: lvm_partition, id: lvm_partition-2}
+    - {fstype: xfs, volume: lvm_partition-2, preserve: false, type: format, id: format-5}
+    - {name: LVLog, volgroup: lvm_volgroup-0, size: 10737418240B, wipe: superblock,
+      preserve: false, type: lvm_partition, id: lvm_partition-3}
+    - {fstype: xfs, volume: lvm_partition-3, preserve: false, type: format, id: format-6}
+    - {path: /var/log, device: format-6, type: mount, id: mount-6}
+    - {name: LVTmp, volgroup: lvm_volgroup-0, size: 2147483648B, wipe: superblock,
+      preserve: false, type: lvm_partition, id: lvm_partition-4}
+    - {fstype: xfs, volume: lvm_partition-4, preserve: false, type: format, id: format-7}
+    - {path: /var/tmp, device: format-7, type: mount, id: mount-7}
+    - {name: LVHome, volgroup: lvm_volgroup-0, size: 3221225472B, wipe: superblock,
+      preserve: false, type: lvm_partition, id: lvm_partition-5}
+    - {fstype: xfs, volume: lvm_partition-5, preserve: false, type: format, id: format-8}
+    - {path: /home, device: format-8, type: mount, id: mount-8}
+    - {path: /boot, device: format-2, type: mount, id: mount-2}
+    - {path: /var/log/audit, device: format-5, type: mount, id: mount-5}
+    - {path: /boot/efi, device: format-1, type: mount, id: mount-1}
+    swap: {swap: 0}
+  updates: security
+
+  keyboard: {layout: us, variant: ''}
+  locale: en_US.UTF-8
+
+  reporting:
+    builtin:
+      type: print
+
+  early-commands:
+    - |
+        ################################
+        ## Recuperation des infos API ##
+        ################################
+        echo "#################################################"
+        echo "## Recuperation des infos du serveur via l'API ##"
+        echo "#################################################"
+  
+        ###########################
+        ## Setting API variables ##
+        ###########################
+        sfai_url="https://sfai.svc.ulaval.ca/adfs/oauth2/token"
+        client_id="d042a4a0-2bd8-40ad-a6ae-1b0b7854336f"
+        client_sec="RcV-0bTIug19Gp0K0kOURvsnlNNc-OP3hV3VU0hX"
+        apiurl="https://ul-iac.svc.ulaval.ca/server/pxeboot/"
+        token_response=$(curl -H "Content-Type:application/x-www-form-urlencoded" -d "client_id=$client_id&client_secret=$client_sec&grant_type=client_credentials" "${sfai_url}")
+        access_token=$(echo "$token_response" | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["access_token"])')
+        headers="Authorization: Bearer $access_token"
+  
+    - |
+      for mac in $(ip link | awk '/ether/ {print $2}'); do
+        echo "contacting API URL: $apiurl$mac"
+        echo "fetch server info for $mac ..."
+        serverjson="$(curl -v -H "Accept: application/json" -H "$headers" --url $apiurl$mac | python3 -m json.tool)"
+        nodename=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["name"].lower())')
+        echo "nodename: $nodename"
+        if [ "$nodename" != "" ]; then
+          echo "found $nodename"
+          installstate=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["processState"])')
+          echo "the installstate of the machine is at $installstate"
+        fi
+      done        
+    - |
+      #############################
+      ## Check si on clean le HD ##
+      #############################
+     
+      # if API variable processState is start then reinstall host. Else
+      # if API variable processState is completed then abort reinstall.
+      # =================================================================
+      echo "${installstate}"
+      sleep 5
+      installstate="start"
+     
+      if echo "${installstate}" | grep -Fiq "start"; then
+        ### - Destroy LVM vg1 and all it's lvs
+        vgremove vg1 --force
+        ### - Destroy all partitions on the installation drive.
+        echo "clearpart --all --drives=$myinstalldisk --initlabel" > /tmp/partition
+      else 
+        echo "                         !!!!!!!!!!!!!!  INSTALLATION ABORTED  !!!!!!!!!!!!!!"
+        echo "               !!!!!!!!!!!!!!  processState from API is: ${installstate}  !!!!!!!!!!!!!!"
+        echo "!!!!!!!!!!!!!!  This is to avoid reinstalling OS on existing systems without permissions  !!!!!!!!!!!!!!"
+        echo "                    !!!!!!!!!!!!!!  You must use API to reinstall host  !!!!!!!!!!!!!!"
+        echo "                                        https://servicesti.ulaval.ca/"
+        echo  
+        sleep 300
+        shutdown now
+      fi
+
+  user-data: # Commands here run during first boot (cannot be interactive)
+    # The modules that run in the 'init' stage
+    cloud_init_modules:
+      - migrator
+      - seed_random
+      - bootcmd
+      - write-files
+      - write-files-deferred
+      - growpart
+      - resizefs
+      - disk_setup
+      - mounts
+      - set_hostname
+      - update_hostname
+      - update_etc_hosts
+      - ca-certs
+      - rsyslog
+      - users-groups
+      - ssh
+    # The modules that run in the 'config' stage
+    cloud_config_modules:
+      - snap
+      - ssh-import-id
+      - keyboard
+      - locale
+      - set-passwords
+      - grub-dpkg
+      - apt-pipelining
+      - apt-configure
+      - ubuntu-advantage
+      - ntp
+      - timezone
+      - disable-ec2-metadata
+      - runcmd
+      - byobu
+    # The modules that run in the 'final' stage
+    cloud_final_modules:
+      - package-update-upgrade-install
+      - fan
+      - landscape
+      - lxd
+      - ubuntu-drivers
+      - puppet
+      - chef
+      - mcollective
+      - salt-minion
+      - reset_rmc
+      - refresh_rmc_and_interface
+      - rightscale_userdata
+      - scripts-vendor
+      - [scripts-user, always]
+      - scripts-per-once
+      - scripts-per-boot
+      - scripts-per-instance
+      - ssh-authkey-fingerprints
+      - keys-to-console
+      - install-hotplug
+      - phone-home
+      - final-message
+      - power-state-change
+
+    hostname: UBU
+    timezone: America/Toronto
+
+    package_update: true
+    package_upgrade: true
+    packages: 
+      - realmd
+      - sssd
+      - oddjob
+      - oddjob-mkhomedir
+      - adcli
+      - samba-common
+      - net-tools
+      - network-manager
+      - iproute2
+      - unzip
+      - krb5-user
+      - virt-what
+      - apt-utils
+      - ansible
+
+
+    users:
+      - default
+      - name: eddie
+        hashed_passwd: "$6$rounds=4096$xREWm3d41QRaC/lD$Gw.RTuGDIxJ/ofr65zhxzlf3488CcsJxUjRXZxzSO.qH6UwtUG9iAYgurZr1hUeAvNrKxpOqyrxSEVwGojd630"
+        lock_passwd: false
+        gecos: Eddie Deslauriers Morel
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        groups: users, admin
+        shell: /bin/bash
+      - name: ansiblelin
+        hashed_passwd: "$6$rounds=4096$haFqp814qtqw$1yPSSf3Vx3czNlOul7zPBKZygLmSUxz7po3qZCtE.HFf0eQhrUzYdPlJOXB36Qtk6.7kfcmc6WyybblTNlEZR0"
+        lock_passwd: true
+        gecos: Compte ansible pour playbook
+        groups: users, admin
+        shell: /bin/bash
+
+        #shiebor0ieJu
+
+    bootcmd:
+    # setup de ansible script first boot
+      - git clone https://git-dco.svc.ulaval.ca/ul-lin/ansible/base_linux.git -b edm_ajout_ubuntu /usr/local/ul/ansible_file/base_linux 
+      - mv /usr/local/ul/ansible_file/base_linux/ansible.tgz /usr/local/ul/ansible_file/
+      - tar zxvf /usr/local/ul/ansible_file/ansible.tgz -C /usr/local/ul/ansible_file/
+    runcmd:
+      - |
+        echo
+        echo "################################"
+        echo "# Running Pre Configuration    #"
+        echo "################################"
+        echo "Getting OS version to install..."
+        myosvers=$(hostnamectl | grep -i 'Operating System' | cut -d ':' -f2)
+        echo "OS version to install: " $myosvers
+        echo "setting some variable for internal needs"
+        my_dns1="10.141.1.10"
+        my_dns2="10.141.129.10"
+      - |
+        ################################
+        ## Recuperation des infos API ##
+        ################################
+        echo "#################################################"
+        echo "## Recuperation des infos du serveur via l'API ##"
+        echo "#################################################"
+  
+        ###########################
+        ## Setting API variables ##
+        ###########################
+        sfai_url="https://sfai.svc.ulaval.ca/adfs/oauth2/token"
+        client_id="d042a4a0-2bd8-40ad-a6ae-1b0b7854336f"
+        client_sec="RcV-0bTIug19Gp0K0kOURvsnlNNc-OP3hV3VU0hX"
+        apiurl="https://ul-iac.svc.ulaval.ca/server/pxeboot/"
+        token_response=$(curl -H "Content-Type:application/x-www-form-urlencoded" -d "client_id=$client_id&client_secret=$client_sec&grant_type=client_credentials" "${sfai_url}")
+        access_token=$(echo "$token_response" | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["access_token"])')
+        headers="Authorization: Bearer $access_token"
+  
+      - |
+        for mac in $(ip link | awk '/ether/ {print $2}'); do
+          sleep 15
+          echo "contacting API URL: $apiurl$mac"
+          echo "fetch server info for $mac ..."
+          serverjson="$(curl -v -H "Accept: application/json" -H "$headers" --url $apiurl$mac | python3 -m json.tool)"
+          nodename=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["name"].lower())')
+          echo "nodename: $nodename"
+          if [ "$nodename" != "" ]; then
+            echo "found $nodename"
+            my_mac=$mac
+            hostname=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["hostName"].lower())')
+            domain=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["domain"].lower())')
+            type=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["type"])')
+            installstate=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["processState"])')
+            my_origin=$(echo $serverjson | python3 -c 'import sys,json; print(json.load(sys.stdin, strict=False)["origin"])')
+            echo "my_origin: ${my_origin}"
+            parseAttributsScript="import sys, json; attributs = json.load(sys.stdin, strict=False)['attributs']; a = { item['name']:item['value'] for item  in attributs }; print(a[sys.argv[1]])"
+            encryption=$(echo $serverjson | python3 -c "$parseAttributsScript" UL-IAC-DISK-ENCRYPTION-ENABLED)
+            ##############################################
+            ###### Get Static IP config if present. ######
+            ############################################## 
+            my_static_ip=$(echo $serverjson | python3 -c "$parseAttributsScript" UL-IAC-IPADDRESS)
+            my_static_gateway=$(echo $serverjson | python3 -c "$parseAttributsScript" UL-IAC-GATEWAY)
+            my_static_netmask=$(echo $serverjson | python3 -c "$parseAttributsScript" UL-IAC-NETMASK)
+            
+            # echo "$serverjson"
+            # echo "-----"
+            # echo "$type"
+            # echo "$domain"
+            # echo "$my_origin"
+            # echo "$installstate"
+            # echo "-----"
+
+            if [ -z "$domain" ]; then
+              domain="ul.ca"
+            fi      
+            if [ "$type" = "Physique" ]; then
+              fqdnname="$hostname"
+            elif [ "$domain" = "externe" ]; then
+              fqdnname="$nodename.local"
+            else
+              fqdnname="$nodename.$domain"
+            fi
+            echo "ul_iac_api_nodename: ${nodename}" > /tmp/.ul_iac_api_nodename.yml
+            break
+          fi
+        done
+      - echo "##########################################"
+      - echo "##____Create /usr/local/ul directory____##"
+      - echo "##########################################"
+      - mkdir -p /usr/local/ul/
+      - echo "My FQDN from API is $fqdnname"
+      - echo "$domain" > /home/ansiblelin/.ul_iac_api_domain.txt
+      - echo "$nodename" > /home/ansiblelin/.ul_iac_api_nodename.txt
+      - echo "$mydomain" > /home/ansiblelin/.ul_iac_api_mydomain.txt
+      - |
+        echo $hostname
+        echo $nodename
+        hostnamectl set-hostname $(cat /home/ansiblelin/.ul_iac_api_nodename.txt)
+        # sed -i "s/UBU/$(cat /home/ansiblelin/.ul_iac_api_nodename.txt)/g" /etc/hosts        
+        echo "Your hostname is: $hostname and the file /etc/hosts:\n"
+      - # section pour avoir la clé public selon le hostname à modifier
+      - HOSTNAME=$(hostname)
+      - cat >> /etc/sudoers.d/ansiblelin << EOF
+      - ansiblelin ALL=(root) NOPASSWD:ALL
+      - Defaults:ansiblelin !requiretty
+      - EOF
+      - chmod 0440 /etc/sudoers.d/ansiblelin
+      - mkdir /home/ansiblelin/.ssh
+      - case "$HOSTNAME" in
+        *-pr-*)
+          SSHPUBKEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC5g64xToK6dudMgiVxzr/ZJqfgh7X8j1Lj/hdwlAh0JJau7XqahConBHOu/zUrHmOx1grJee/XhIRiZ1/atO0CGUOFJBzlI35aBt8jIHN1dVr0k2EMGA8HqlK4fTzo53aflCxN8KBdfTkobopabpywcgIFT9C5zxhUtvGnD0BB49d0+lPDyhXRk4gNZp040GLCVCc4XBzowZjh2LDOyHaPOBjaGqaIDKzRtggrOhcMNcypa7VR+S/IoOtbex48ZyaWOjZClWxEjqQlPonrTkVdaxezMvQ0NXhMkgJGXnzvhJjDkFXbhprifQC2RV5q7rbP6cKJ1zdAC6uDJiT/Csn/ user@ulaval.pr"
+          ;;
+        *-ap-*)
+          SSHPUBKEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDYnnF+JguWtwsmsd3vNMRafuKmK6nGj48Fh6yvMZ/QttAJ473d7tC0+NSA1+DNJXimsHf3oxAa4rBGbfIl0ko5se3tO+ROG1/2GA4IAmVeKvQCpo3IxtZuNyVEU+2gpbcalzkjYm2h+UEW24h5fH9dNBUQMFQ5ko5rkNMa9UK7B7tTRaYzKmLaiHWfCPnH1+LUrYGh9WaGZJI3iEsG6ljY79GyuUVpDu2QRKAfsEG7aH8a9FrIcZ0nyJyBbPQU1Rl1M+F7925niF8TxP1XEdKbRfMGLzk/gy76ZUYcUb3A1T6orVuftWUYFIpCXab+hUhVrzTbcZfkepgoSCDCaM9x user@ulaval.ap"
+          ;;
+        *-at-*)
+          SSHPUBKEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDUbw0/V22kw7b4DlnRSTFpJh5yCqYeTlPjaDxtu158+QdxVUrQhugSQ3TRT96zYUSGQeLO6pu9Sgj3vh/YwUhQEIh8DtPmtCkTAMrSNGKgi5Au7LBlB6FhiFrd4TIwh9urV9QLVw/5PZhKn+4R3aF4LSxtljVAlqv4prO3XaMFqFQmUDyZZwjmR021LokKE/9ayG5xeZez6sjUZZm4XDSbVoIi481hZjvUg5qo8t8MZ1WX5RtckYBdElnbhNBi+pxs4rDy+c9cC9AZWov8f70pDRNwYAlOKU4MxJC/1cEPdvdZz25X+dUu+HQyeRhCzEEKYtZoAiqvxoUZlE5Oflan user@ulaval.at"
+          ;;
+        *-dv-*)
+          SSHPUBKEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDK+zamm8HcYHpyIXhje699Azc02JXgszHBkegDjKLZh2itZ4XFYki+MiKQ6aZPu5j3EzVlyi//94KonboHw0v6qNaOB4UFYJ9kpzpLhZCaeI2suA6QlR9lYVUbj7x8NWejEhT/346FuCbnM9WTENjG1k0vKWB9HBt/hHYJj4YrR4cnTxfz6tCNBS4XEGigHx60HT+WaO2UL7FAqfirJYFERjUVLaoDfq3sr/0Tr0VerPDqolP8h7XygXBW/YaB/xO9UmSLvyBnzF1hQJSMxF5DKIGEmE+0Mn9SVzAEeB4SdaipWEhpuAQ6pMPBNphV1kceb+gLpelGl1itErfIaqkT user@ulaval.dv"
+          ;;
+        *-ts-*)
+          SSHPUBKEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDFDGoVU1KjXbNlS7CojSmLm2PWrgsH+Zg5IlJvj4sa63I6QGp0h9s6MJzl3HcdjTabQQbSIK6Kkk61Pg9+KCN+LQP8/po+6ZdgZgFv+XojgTJNBF3teobVdbLmhJsDXBcivqwPgaw2M9CdX/FE491LC3cHlf/QSQMsklmN7HYlxsd8OlGDvAgOKzXBC1BnZ8dv7voA9lB9gv1cP6QRDXf1JjloQjJtMdsueQ6QE9Ki/Atsh8NpmmMeUHcqb/WMp1CnM527+BZNA1Mp8BiyA/9RfjJikn96BnWZ3M6U/tl0zsQjO2XwSUUadlJvnPUyA1yoieVEJqZM2c5vAha8RovF user@ulaval.ts"
+          ;;
+        *)
+          SSHPUBKEY="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDLe70nWSUC2bpCDEosAdkusY848kPFf0wS/LXjulu97Nn3EPX9vm24IYhUvi7U6R01yeB+KqBRRzBdDqSzLVsoKrX6PmnIVwAy3j6AxYXObxoM1DWbfc7zUoEMy1Jkz6JTjKEwZnfIoPnXcd0bQaMzZRPltCixyNyoOByGojxXCRO6/EC4CBJDPNHXcXrgZtyuZpR/bSJR/rfTzGUICYIosE4KeHbWMIZ6ea6KlR1Ek6CKKaAYYwQrrNOCvOvMNerKXn5g3QTNAQbgdA1A3zAk6p/dNb15F5GmtCE0hS+ZBEjl1ZusiRX91W8qoDc2upLlad0O8fPQzZengkLrIigT user@ulaval.ex"
+          ;;
+        esac
+      - echo "$SSHPUBKEY" > /home/ansiblelin/.ssh/authorized_keys
+      - touch /home/ansiblelin/.base_linux_first_run
+      - chown -R ansiblelin:ansiblelin /home/ansiblelin/.ssh
+      - chmod 600 /home/ansiblelin/.ssh/authorized_keys
+      - echo "je sui ici"
+      - MYDOMAIN=$(cat /home/ansiblelin/.ul_iac_api_mydomain.txt)
+      - |
+        if [ "$MYDOMAIN" = "externe" ]; then      
+          echo $(cat /home/ansiblelin/.ul_iac_api_nodename.txt) | passwd --stdin root
+          passwd -e root
+          chage -l root >> /root/chagepwd.log
+          echo "!!! Launching Apt to update server... !!!"
+          apt update  -y >> /root/ci_apt_update.log
+          echo "!!! Ending Apt update... !!!"
+      
+          # Appel de l'API pour marquer le serveur comme complété.
+          # ------------------------------------------------------
+          echo "!!! Contacting API to mark installation completed !!!"
+          newheaders="Authorization: Bearer dWwtaWFjLXMtYS1hcGlAdWwuY2E6RXBveHktc2VtaW5hci1jeXByZXNzMQ=="
+          apiurlshort="https://ul-iac.svc.ulaval.ca"
+          curl -H "Accept: application/json" -H "Content-Type: application/json" -H "$newheaders" --url "$apiurlshort"/server/"$(cat /home/ansiblelin/.ul_iac_api_nodename.txt)"/install/completed -X PATCH >> ci_api_completed.log
+                    
+        fi
+      - echo "##########################################"
+      - echo "##_______End of the installation________##"
+      - echo "##########################################"
+      # - sudo touch /etc/cloud/cloud-init.disabled
+    write_files:      
+      - content: |
+          #!/usr/bin/env bash
+      
+          HOST=$1
+          ENV=$2
+          cd base_linux
+          cd roles
+          ansible-galaxy install --roles-path /usr/local/ul/ansible_file/base_linux/roles/ -r requirements.yml  
+          cd ..
+          
+          ANSIBLE_HOST_KEY_CHECKING=False ansible-playbook -i "$HOST," \
+          --vault-password-file /usr/local/ul/ansible_file/.ansible/my-config/vault/vault.pass \
+          --connection=local \
+          -v \
+          -e '@/usr/local/ul/ansible_file/.ansible/my-config/vault/vault.ansibleuser_pwd' \
+          -e '@group_vars/all.yml' \
+          -e base_linux_account_provider=ad \
+          -e force_run=1 \
+          -e ul_lin_env=$ENV \
+          -e ul_realm_leave_domain=True \
+          -e mdatp_manage_repo=True \
+          -u root \
+          ./base_linux.yml | tee -a /usr/local/ul/ci_ansible_playbook.log
+          cd ..
+        path: /usr/local/ul/ansible_file/exec_base_linux
+        owner: root:root
+        permissions: '0744'
+      
+      - content: |
+          #!/usr/bin/env bash
+          
+          apt -y install ansible
+          cd /usr/local/ul/ansible_file
+          ./exec_base_linux $(cat /home/ansiblelin/.ul_iac_api_nodename.txt) ts
+          
+          # section qui delete le script
+          rm $0
+        path: /var/lib/cloud/scripts/per-once/ansible_playbook_run.sh
+        owner: root:root
+        permissions: '0744'   
+      #fichier test pour ansible playbook apres install
+      - content: |
+          #!/usr/bin/env bash
+          
+          cd /usr/local/ul/ansible_file/base_linux
+          git pull
+          cd ..
+          ./exec_base_linux $(cat /home/ansiblelin/.ul_iac_api_nodename.txt) ts
+        path: /usr/local/ul/after_install_test/ansible_playbook_rerun.sh
+        owner: root:root
+        permissions: '0744'   
+
+    ssh_pwauth: True ## This line enables ssh password authentication
+
+    power_state:
+      delay: 30
+      mode: reboot
+      message: ---Rebooting machine---
+      
+    
+
