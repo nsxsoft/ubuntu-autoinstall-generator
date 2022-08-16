@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+
+./uag-jammy.sh -a -k -u ./user-data
+
